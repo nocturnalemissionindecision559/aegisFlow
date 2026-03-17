@@ -71,6 +71,38 @@ aegisflow
 7. Task planning and execution
 8. Integration review and final handoff
 
+## Workflow Diagram
+
+```mermaid
+flowchart TD
+    subgraph S1["Requirement Phase"]
+        A["Idea"] --> B["Clarifying Questions"]
+        B --> C["Scope Alignment / MVP Boundary"]
+        C --> D["Requirement Validation"]
+    end
+
+    subgraph S2["Solution Phase"]
+        D --> E["PRD"]
+        E --> F["Technical Design"]
+    end
+
+    subgraph S3["Review Phase"]
+        F --> G["Independent Multi-Agent Review"]
+        G --> H["Consensus Summary"]
+        H --> I{"Any disagreement?"}
+        I -- "Yes" --> J["Roundtable Discussion / Decision"]
+        I -- "No" --> K["Task Planning"]
+        J --> K
+    end
+
+    subgraph S4["Execution Phase"]
+        K --> L["Implementation"]
+        L --> M["Integration Review"]
+        M --> N["Delivery Summary"]
+        N --> O["Final Handoff"]
+    end
+```
+
 ## Output Layout
 
 Only the final workspace deliverables are written into the current working directory:
@@ -99,6 +131,7 @@ On first run, AegisFlow guides you through setup and creates a global config fil
 
 - Use `--setup` any time you want to redetect engines or change routing preferences.
 - A sample config is provided in `aegisflow.config.json.example`.
+- Model execution timeout is configurable via `timeouts.modelExecutionMinutes` in `~/.aegisflow/config.json` and defaults to `30`.
 - Environment variable overrides are available for common settings such as `AEGISFLOW_LANGUAGE`, `AEGISFLOW_DESIGN_LEAD`, `AEGISFLOW_FALLBACK_ORDER`, `AEGISFLOW_CODEX_CMD`, `AEGISFLOW_CLAUDE_CMD`, `AEGISFLOW_GEMINI_CMD`, and the matching `*_ARGS` variables.
 
 ## Local Development

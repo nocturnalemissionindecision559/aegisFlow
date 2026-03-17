@@ -8,6 +8,11 @@ export interface CLIExecutionResult<T = string> {
   parsed?: T;
 }
 
+export interface CapabilityStatus {
+  available: boolean;
+  reason?: string;
+}
+
 export interface AdapterStatus {
   available: boolean;
   command?: string;
@@ -32,6 +37,8 @@ export abstract class BaseCLIAdapter {
   ) {}
 
   abstract checkAvailability(): Promise<AdapterStatus>;
+
+  abstract checkInteractiveSessionAvailability(): Promise<CapabilityStatus>;
 
   abstract executeText(prompt: string, options?: CLIExecutionOptions): Promise<CLIExecutionResult<string>>;
 

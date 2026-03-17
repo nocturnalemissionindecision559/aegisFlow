@@ -5,10 +5,17 @@ import os from 'os';
 import path from 'path';
 
 import { detectEngine } from '../engine-discovery';
+import { DEFAULT_MODEL_EXECUTION_TIMEOUT_MS } from '../defaults';
 import { EngineCommandConfig, EngineSlot, JsonSchema } from '../types';
-import { extractJsonBlock, stripAnsi } from '../utils';
+import { extractJsonBlock, stripAnsi, truncate } from '../utils';
 import { CLIExecutionStrategy, createCLIExecutionStrategy } from './cli-strategies';
-import { AdapterStatus, BaseCLIAdapter, CLIExecutionOptions, CLIExecutionResult } from './base';
+import {
+  AdapterStatus,
+  BaseCLIAdapter,
+  CapabilityStatus,
+  CLIExecutionOptions,
+  CLIExecutionResult,
+} from './base';
 
 function ensureTempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aegisflow-'));
@@ -301,6 +308,7 @@ function validateSchemaValue(value: unknown, schema: JsonSchema, pointer = 'resp
 export class ProcessCLIAdapter extends BaseCLIAdapter {
   private readonly config: EngineCommandConfig;
   private cachedStatus?: AdapterStatus;
+  private cachedInteractiveStatus?: CapabilityStatus;
   private readonly strategy: CLIExecutionStrategy;
 
   constructor(
@@ -308,6 +316,7 @@ export class ProcessCLIAdapter extends BaseCLIAdapter {
     name: string,
     config: EngineCommandConfig = {},
     private readonly dryRun = false,
+    private readonly defaultTimeoutMs = DEFAULT_MODEL_EXECUTION_TIMEOUT_MS,
   ) {
     super(slot, name);
     this.config = config;
@@ -326,6 +335,46 @@ export class ProcessCLIAdapter extends BaseCLIAdapter {
       : { available: false, reason: `No executable found for ${this.name}. ${detection.reason || ''}`.trim() };
 
     return this.cachedStatus;
+  }
+
+  async checkInteractiveSessionAvailability(): Promise<CapabilityStatus> {
+    if (this.cachedInteractiveStatus) {
+      return this.cachedInteractiveStatus;
+    }
+
+    const status = await this.checkAvailability();
+    if (!status.available || !status.command) {
+      this.cachedInteractiveStatus = {
+        available: false,
+        reason: status.reason || `${this.name} is unavailable.`,
+      };
+      return this.cachedInteractiveStatus;
+    }
+
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      this.cachedInteractiveStatus = {
+        available: false,
+        reason: `${this.name} requires an interactive TTY session.`,
+      };
+      return this.cachedInteractiveStatus;
+    }
+
+    const tempDir = ensureTempDir();
+    try {
+      const spawnSpec = this.strategy.buildSpawnSpec(status.command, ['--version'], tempDir);
+      await this.runInteractiveProbe(spawnSpec.command, spawnSpec.args, process.cwd(), spawnSpec.env || process.env);
+      this.cachedInteractiveStatus = { available: true };
+      return this.cachedInteractiveStatus;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.cachedInteractiveStatus = {
+        available: false,
+        reason: truncate(message.replace(/\s+/g, ' ').trim(), 160),
+      };
+      return this.cachedInteractiveStatus;
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   }
 
   async executeText(prompt: string, options: CLIExecutionOptions = {}): Promise<CLIExecutionResult<string>> {
@@ -355,13 +404,15 @@ export class ProcessCLIAdapter extends BaseCLIAdapter {
 
     const normalizedSchema = normalizeJsonSchema(schema);
     const jsonPrompt =
-      this.slot === 'claude'
-        ? [
+      this.slot === 'codex'
+        ? prompt
+        : [
             prompt,
             'Return a single valid JSON object only. Do not wrap it in markdown.',
+            'Do not add commentary before or after the JSON.',
+            'All property names must use double quotes.',
             `JSON schema:\n${JSON.stringify(normalizedSchema, null, 2)}`,
-          ].join('\n\n')
-        : prompt;
+          ].join('\n\n');
 
     const result = await this.executeInternal(jsonPrompt, {
       ...options,
@@ -454,7 +505,7 @@ export class ProcessCLIAdapter extends BaseCLIAdapter {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached,
       });
-      const timeoutMs = options.timeoutMs ?? 8 * 60 * 1000;
+      const timeoutMs = options.timeoutMs ?? this.defaultTimeoutMs;
       const structuredParser = useStructuredStream ? this.strategy.createStructuredParser(options) : null;
 
       let stdout = '';
@@ -824,5 +875,83 @@ export class ProcessCLIAdapter extends BaseCLIAdapter {
     }
 
     return rawParsed as T;
+  }
+
+  private runInteractiveProbe(
+    command: string,
+    args: string[],
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      let child: nodePty.IPty;
+      try {
+        child = nodePty.spawn(command, args, {
+          name: 'xterm-color',
+          cols: 80,
+          rows: 24,
+          cwd,
+          env,
+        });
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+
+      let settled = false;
+      let transcript = '';
+      let dataDisposable: nodePty.IDisposable | undefined;
+      let exitDisposable: nodePty.IDisposable | undefined;
+
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timeout);
+        dataDisposable?.dispose();
+        exitDisposable?.dispose();
+
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      };
+
+      const timeout = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // Ignore kill failures during probe cleanup.
+        }
+        finish(new Error(`${this.name} interactive PTY probe timed out.`));
+      }, 5_000);
+
+      dataDisposable = child.onData(data => {
+        transcript += stripAnsi(data);
+        if (transcript.length > 400) {
+          transcript = transcript.slice(-400);
+        }
+      });
+
+      exitDisposable = child.onExit(({ exitCode }) => {
+        if (exitCode === 0) {
+          finish();
+          return;
+        }
+
+        const preview = transcript.replace(/\s+/g, ' ').trim();
+        finish(
+          new Error(
+            preview
+              ? `${this.name} interactive PTY probe exited with code ${exitCode}: ${truncate(preview, 160)}`
+              : `${this.name} interactive PTY probe exited with code ${exitCode}.`,
+          ),
+        );
+      });
+    });
   }
 }

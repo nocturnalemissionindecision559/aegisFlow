@@ -71,6 +71,38 @@ aegisflow
 7. 任务拆分与执行
 8. 集成评审与最终交接
 
+## 流程图
+
+```mermaid
+flowchart TD
+    subgraph S1["需求阶段"]
+        A["想法"] --> B["反问关键问题"]
+        B --> C["需求收敛 / MVP 边界"]
+        C --> D["需求校验"]
+    end
+
+    subgraph S2["方案阶段"]
+        D --> E["PRD"]
+        E --> F["技术设计"]
+    end
+
+    subgraph S3["评审阶段"]
+        F --> G["多 Agent 独立评审"]
+        G --> H["共识汇总"]
+        H --> I{"是否存在分歧"}
+        I -- "是" --> J["Roundtable 讨论 / 决策"]
+        I -- "否" --> K["任务拆分"]
+        J --> K
+    end
+
+    subgraph S4["执行阶段"]
+        K --> L["开发执行"]
+        L --> M["集成评审"]
+        M --> N["交付总结"]
+        N --> O["最终 Handoff"]
+    end
+```
+
 ## 产物结构
 
 当前工作目录只写入最终交付物：
@@ -99,6 +131,7 @@ aegisflow
 
 - 可以通过 `--setup` 重新检测引擎或调整路由偏好。
 - 示例配置见 `aegisflow.config.json.example`。
+- 模型执行超时可通过 `~/.aegisflow/config.json` 中的 `timeouts.modelExecutionMinutes` 配置，默认值为 `30`。
 - 支持通过环境变量覆盖常用设置，例如 `AEGISFLOW_LANGUAGE`、`AEGISFLOW_DESIGN_LEAD`、`AEGISFLOW_FALLBACK_ORDER`、`AEGISFLOW_CODEX_CMD`、`AEGISFLOW_CLAUDE_CMD`、`AEGISFLOW_GEMINI_CMD`，以及对应的 `*_ARGS` 变量。
 
 ## 本地开发

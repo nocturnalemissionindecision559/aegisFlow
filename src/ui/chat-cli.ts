@@ -335,12 +335,18 @@ export class ChatUI {
     let loadingHeartbeat: ReturnType<typeof setInterval> | null = null;
 
     const writeLine = (kind: 'stdout' | 'stderr', line: string) => {
-      const cleaned = line.trim();
-      if (!cleaned) {
+      const normalized = this.normalizeStreamingMarkdownLine(line).replace(/\s+$/, '');
+      if (!normalized.trim()) {
+        if (lastPrinted === '__blank__') {
+          return;
+        }
+
+        lastPrinted = '__blank__';
+        p.log.message('');
         return;
       }
 
-      const rendered = kind === 'stderr' ? `[stderr] ${cleaned}` : cleaned;
+      const rendered = kind === 'stderr' ? `[stderr] ${normalized}` : normalized;
       if (rendered === lastPrinted) {
         return;
       }
@@ -490,5 +496,14 @@ export class ChatUI {
 
   private static shellQuote(value: string) {
     return `'${value.replace(/'/g, `'\\''`)}'`;
+  }
+
+  private static normalizeStreamingMarkdownLine(line: string): string {
+    const trimmed = line.trim();
+    if (/^```(?:markdown|md)?$/i.test(trimmed) || /^```$/.test(trimmed)) {
+      return '';
+    }
+
+    return line.replace(/```(?:markdown|md)?/gi, '').replace(/```/g, '');
   }
 }

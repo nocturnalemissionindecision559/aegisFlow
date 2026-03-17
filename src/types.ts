@@ -316,6 +316,14 @@ export interface ReplyLanguageConfig {
   label: string;
 }
 
+export interface TimeoutConfigFile {
+  modelExecutionMinutes?: number;
+}
+
+export interface TimeoutConfig {
+  modelExecutionMs: number;
+}
+
 export interface EngineDetectionStatus {
   available: boolean;
   command?: string;
@@ -334,6 +342,7 @@ export interface AegisConfigFile {
   dryRun?: boolean;
   setup?: Partial<SetupConfig>;
   language?: Partial<ReplyLanguageConfig>;
+  timeouts?: Partial<TimeoutConfigFile>;
   routing?: {
     designLead?: EngineSlot;
     fallbackOrder?: EngineSlot[];
@@ -347,6 +356,7 @@ export interface AegisConfig {
   dryRun: boolean;
   setup: SetupConfig;
   language: ReplyLanguageConfig;
+  timeouts: TimeoutConfig;
   routing: {
     designLead?: EngineSlot;
     fallbackOrder: EngineSlot[];

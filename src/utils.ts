@@ -11,6 +11,10 @@ export function stripAnsi(input: string): string {
   return input.replace(ANSI_PATTERN, '');
 }
 
+export function normalizeLineEndings(input: string): string {
+  return input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
 export function truncate(text: string, max = 600): string {
   return text.length <= max ? text : `${text.slice(0, max)}...`;
 }
@@ -20,7 +24,7 @@ export function unique<T>(items: T[]): T[] {
 }
 
 export function extractJsonBlock<T>(raw: string): T {
-  const cleaned = stripAnsi(raw).trim();
+  const cleaned = stripAnsi(normalizeLineEndings(raw)).trim();
   const fenced = cleaned.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const candidate = fenced ? fenced[1].trim() : cleaned;
 
@@ -35,6 +39,60 @@ export function extractJsonBlock<T>(raw: string): T {
   }
 
   throw new Error('Failed to extract valid JSON from model output.');
+}
+
+export function normalizeMarkdownDocument(raw: string): string {
+  const cleaned = stripAnsi(normalizeLineEndings(raw)).trim();
+  if (!cleaned) {
+    return cleaned;
+  }
+
+  const outerFenced = extractOuterMarkdownFence(cleaned);
+  return outerFenced || cleaned;
+}
+
+function extractOuterMarkdownFence(input: string): string | null {
+  const lines = input.split('\n');
+  const firstFenceIndex = lines.findIndex(line => /^```(?:markdown|md)?\s*$/i.test(line.trim()));
+  const lastFenceIndex = findLastIndex(lines, line => /^```\s*$/.test(line.trim()));
+
+  if (firstFenceIndex !== -1 && lastFenceIndex > firstFenceIndex) {
+    const nearStart = firstFenceIndex <= 2;
+    const nearEnd = lines.length - 1 - lastFenceIndex <= 2;
+    if (nearStart && nearEnd) {
+      const body = lines.slice(firstFenceIndex + 1, lastFenceIndex).join('\n').trim();
+      if (body) {
+        return body;
+      }
+    }
+  }
+
+  const openMatch = /```(?:markdown|md)?\s*\n/i.exec(input);
+  const closingFenceIndex = input.search(/\n```\s*$/);
+  if (!openMatch || closingFenceIndex === -1 || closingFenceIndex <= openMatch.index) {
+    return null;
+  }
+
+  const prefix = input.slice(0, openMatch.index).trim();
+  const suffix = input.slice(closingFenceIndex + 4).trim();
+  const nearStart = openMatch.index <= 400 && prefix.split('\n').filter(Boolean).length <= 3;
+  const nearEnd = suffix.split('\n').filter(Boolean).length <= 2;
+  if (!nearStart || !nearEnd) {
+    return null;
+  }
+
+  const body = input.slice(openMatch.index + openMatch[0].length, closingFenceIndex).trim();
+  return body || null;
+}
+
+function findLastIndex<T>(items: T[], predicate: (item: T) => boolean): number {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    if (predicate(items[index])) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 export function readJsonFile<T>(filePath: string): T | null {

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { ProcessCLIAdapter } from './adapters/acp-wrapper';
-import { AdapterStatus, CLIExecutionResult } from './adapters/base';
+import { AdapterStatus, CapabilityStatus, CLIExecutionResult } from './adapters/base';
 import { loadAegisConfig } from './config';
 import { ConsensusEngine } from './engine/consensus';
 import { ALL_ENGINE_SLOTS, ENGINE_LABELS } from './engine-discovery';
@@ -54,7 +54,15 @@ import {
   WorkspaceSnapshot,
 } from './types';
 import { ChatUI } from './ui/chat-cli';
-import { captureWorkspaceSnapshot, diffSnapshots, nowIso, safeArray, truncate, unique } from './utils';
+import {
+  captureWorkspaceSnapshot,
+  diffSnapshots,
+  normalizeMarkdownDocument,
+  nowIso,
+  safeArray,
+  truncate,
+  unique,
+} from './utils';
 
 const ENGINE_LENSES: Record<EngineSlot, string> = {
   claude: 'architecture, boundaries, long-range tradeoffs',
@@ -69,13 +77,6 @@ const ENGINE_STAGE_HINTS: Record<EngineSlot, string> = {
 };
 
 const ALL_SLOTS: EngineSlot[] = ALL_ENGINE_SLOTS;
-const MODEL_TIMEOUTS_MS = {
-  reviewJson: 20 * 60 * 1000,
-  defaultJson: 2 * 60 * 1000,
-  defaultText: 8 * 60 * 1000,
-  roundtableText: 90 * 1000,
-  taskExecutionText: 8 * 60 * 1000,
-} as const;
 
 type ReviewProgressStatus = 'queued' | 'running' | 'completed' | 'fallback' | 'skipped';
 
@@ -113,15 +114,35 @@ export class Orchestrator {
   private readonly initialSnapshot: WorkspaceSnapshot;
   private readonly startedAt = nowIso();
   private readonly availability = {} as Record<EngineSlot, AdapterStatus>;
+  private readonly interactiveAvailability = {} as Record<EngineSlot, CapabilityStatus>;
   private readonly unhealthySlots = new Set<EngineSlot>();
+  private readonly interactiveDowngradeNotified = new Set<EngineSlot>();
 
   constructor(sessionId?: string) {
     this.store = new ArtifactStore(sessionId);
     this.config = loadAegisConfig();
     this.adapters = {
-      claude: new ProcessCLIAdapter('claude', ENGINE_LABELS.claude, this.config.engines.claude, this.config.dryRun),
-      codex: new ProcessCLIAdapter('codex', ENGINE_LABELS.codex, this.config.engines.codex, this.config.dryRun),
-      gemini: new ProcessCLIAdapter('gemini', ENGINE_LABELS.gemini, this.config.engines.gemini, this.config.dryRun),
+      claude: new ProcessCLIAdapter(
+        'claude',
+        ENGINE_LABELS.claude,
+        this.config.engines.claude,
+        this.config.dryRun,
+        this.config.timeouts.modelExecutionMs,
+      ),
+      codex: new ProcessCLIAdapter(
+        'codex',
+        ENGINE_LABELS.codex,
+        this.config.engines.codex,
+        this.config.dryRun,
+        this.config.timeouts.modelExecutionMs,
+      ),
+      gemini: new ProcessCLIAdapter(
+        'gemini',
+        ENGINE_LABELS.gemini,
+        this.config.engines.gemini,
+        this.config.dryRun,
+        this.config.timeouts.modelExecutionMs,
+      ),
     };
     this.initialSnapshot = captureWorkspaceSnapshot(process.cwd(), this.startedAt);
   }
@@ -161,17 +182,28 @@ export class Orchestrator {
   private async initializeEnvironment() {
     for (const slot of ALL_SLOTS) {
       this.availability[slot] = await this.adapters[slot].checkAvailability();
+      this.interactiveAvailability[slot] = await this.adapters[slot].checkInteractiveSessionAvailability();
     }
 
     const lines = ALL_SLOTS.map(slot => {
       const status = this.availability[slot];
+      const interactiveStatus = this.interactiveAvailability[slot];
       if (status.available) {
-        return `- ${ENGINE_LABELS[slot]}: available via \`${status.command}\``;
+        return [
+          `- ${ENGINE_LABELS[slot]}: available via \`${status.command}\``,
+          interactiveStatus?.available
+            ? this.copy('实时任务会话可用', 'live task session available')
+            : this.copy(
+              `实时任务会话将自动降级（${interactiveStatus?.reason || 'interactive PTY unavailable'})`,
+              `live task session will auto-downgrade (${interactiveStatus?.reason || 'interactive PTY unavailable'})`,
+            ),
+        ].join(' | ');
       }
       return `- ${ENGINE_LABELS[slot]}: unavailable (${status.reason})`;
     });
 
     this.store.saveJson('engine-availability.json', this.availability);
+    this.store.saveJson('engine-capabilities.json', this.interactiveAvailability);
     this.store.saveJson('session-config.json', this.config);
     ChatUI.info('Engine Availability', lines.join('\n'));
   }
@@ -873,7 +905,7 @@ export class Orchestrator {
             ].join('\n'),
             REQUIREMENT_VALIDATION_SCHEMA,
             {
-              timeoutMs: MODEL_TIMEOUTS_MS.reviewJson,
+              timeoutMs: this.config.timeouts.modelExecutionMs,
               allowFallbackProxy: false,
             },
           )),
@@ -1025,6 +1057,13 @@ export class Orchestrator {
     ]);
 
     let prdDraft = this.store.readArtifact('prd-draft.md');
+    if (prdDraft) {
+      const normalizedDraft = normalizeMarkdownDocument(prdDraft);
+      if (normalizedDraft !== prdDraft) {
+        prdDraft = normalizedDraft;
+        this.store.saveArtifact('prd-draft.md', prdDraft);
+      }
+    }
     let revisionRequest: string | null = null;
 
     while (!this.store.exists('prd-final.md')) {
@@ -1035,6 +1074,8 @@ export class Orchestrator {
           'The PRD must contain: Background, Goals, Scope, Non-Goals, User Scenarios, Functional Requirements, Non-Functional Requirements, Risks, Milestones, Acceptance Criteria.',
           'Keep it concrete and implementation-oriented.',
           'If the requirement pack still contains uncertainty, make it explicit in assumptions, scope notes, or risks instead of inventing facts.',
+          'Return raw markdown only. Do not wrap the answer in triple backticks.',
+          'Do not add any explanation before the document.',
           '',
           requirementPackMarkdown
             ? `Requirement package:\n${requirementPackMarkdown}`
@@ -1042,11 +1083,23 @@ export class Orchestrator {
           revisionRequest ? `\nRevision request from user:\n${revisionRequest}` : '',
         ].join('\n');
 
-        const result = await this.runTextWithPreferredSlots(this.buildSlotPreference(leadSlot, 'prd'), prompt, {
-          liveTitle: 'Stage 1 PRD 生成中',
-        });
+        const result = await this.runWithLoading(
+          {
+            start: '正在生成 PRD 草稿...',
+            success: 'PRD 草稿已生成',
+            failure: 'PRD 草稿生成失败',
+          },
+          () => this.runTextWithPreferredSlots(this.buildSlotPreference(leadSlot, 'prd'), prompt),
+          {
+            heartbeatMs: 30_000,
+            onHeartbeat: elapsedMs => this.copy(
+              `${ENGINE_LABELS[leadSlot]} 仍在主写 PRD 草稿，已等待 ${this.formatDurationMs(elapsedMs)}。`,
+              `${ENGINE_LABELS[leadSlot]} is still drafting the PRD (${this.formatDurationMs(elapsedMs)} elapsed).`,
+            ),
+          },
+        );
         ChatUI.info('PRD Routing', this.formatExecutionSummary('PRD 主写', leadSlot, result.resolution));
-        prdDraft = result.output.stdout.trim();
+        prdDraft = normalizeMarkdownDocument(result.output.stdout);
         this.store.saveArtifact('prd-draft.md', prdDraft);
       }
 
@@ -1088,7 +1141,7 @@ export class Orchestrator {
       `技术设计主写：${ENGINE_LABELS[leadSlot]}`,
       `主写关注点：${ENGINE_STAGE_HINTS[leadSlot]}`,
       '说明：若主写模型暂不可用，会自动切换到可用模型代理执行，但主写角色保持不变。',
-      '进度提示：若底层模型支持流式输出会实时转发，否则每 30 秒输出一次“仍在生成”的心跳。',
+      '进度提示：长文阶段仅显示状态与心跳，正文会在生成完成后统一展示。',
     ]);
     this.announceTechDesignProgress(leadSlot, 'running');
 
@@ -1097,22 +1150,31 @@ export class Orchestrator {
       'Write a detailed technical design in markdown.',
       'The design must include: architecture overview, modules, data flow, adapter strategy, roundtable mechanism, task routing, execution strategy, integration review, risks, alternatives.',
       'Reference the approved PRD and keep the design grounded in a local CLI orchestrator architecture.',
+      'Return raw markdown only. Do not wrap the answer in triple backticks.',
+      'Do not add any explanation before the document.',
       '',
       `Approved PRD:\n${prd}`,
     ].join('\n');
 
-    const result = await this.runTextWithPreferredSlots(this.buildSlotPreference(leadSlot, 'techDesign'), prompt, {
-      liveTitle: 'Stage 2 技术设计生成中',
-      heartbeatMs: 30_000,
-      heartbeatMessage: (slot, elapsedMs) => this.copy(
-        `${ENGINE_LABELS[slot]} 仍在主写技术设计草稿，已等待 ${this.formatDurationMs(elapsedMs)}。`,
-        `${ENGINE_LABELS[slot]} is still drafting the technical design (${this.formatDurationMs(elapsedMs)} elapsed).`,
-      ),
-    });
+    const result = await this.runWithLoading(
+      {
+        start: '正在生成技术设计草稿...',
+        success: '技术设计草稿已生成',
+        failure: '技术设计草稿生成失败',
+      },
+      () => this.runTextWithPreferredSlots(this.buildSlotPreference(leadSlot, 'techDesign'), prompt),
+      {
+        heartbeatMs: 30_000,
+        onHeartbeat: elapsedMs => this.copy(
+          `${ENGINE_LABELS[leadSlot]} 仍在主写技术设计草稿，已等待 ${this.formatDurationMs(elapsedMs)}。`,
+          `${ENGINE_LABELS[leadSlot]} is still drafting the technical design (${this.formatDurationMs(elapsedMs)} elapsed).`,
+        ),
+      },
+    );
 
     ChatUI.info('Tech Design Routing', this.formatExecutionSummary('技术设计主写', leadSlot, result.resolution));
 
-    this.store.saveArtifact('tech-design-draft.md', result.output.stdout.trim());
+    this.store.saveArtifact('tech-design-draft.md', normalizeMarkdownDocument(result.output.stdout));
     this.store.saveJson('tech-design-lead.json', {
       leadSlot,
       resolvedBy: result.resolution.resolvedBy,
@@ -1242,7 +1304,7 @@ export class Orchestrator {
               openQuestions: string[];
               suggestedDecision: string;
             }>(slot, prompt, REVIEW_SCHEMA, {
-              timeoutMs: MODEL_TIMEOUTS_MS.reviewJson,
+              timeoutMs: this.config.timeouts.modelExecutionMs,
               avoidTargets: usedTargets,
               allowFallbackProxy: false,
               signal,
@@ -1351,7 +1413,7 @@ export class Orchestrator {
             `Review 关注点：${ENGINE_STAGE_HINTS[slot]}`,
             `当前动作：${ENGINE_LABELS[slot]} 正在独立 review ${ENGINE_LABELS[leadMeta.leadSlot]} 主写的技术设计草稿。`,
             `执行限制：此阶段只允许 ${ENGINE_LABELS[slot]} 直连执行，不会自动切代理。`,
-            `超时阈值：${this.formatDurationMs(MODEL_TIMEOUTS_MS.reviewJson)}`,
+            `超时阈值：${this.formatDurationMs(this.config.timeouts.modelExecutionMs)}`,
           ].join('\n'),
         );
         const fallbackReview = this.buildFallbackReview(slot, error);
@@ -1540,22 +1602,22 @@ export class Orchestrator {
             const prompt =
               round === 1
                 ? [
-                    `You are ${ENGINE_LABELS[slot]} in an AegisFlow roundtable.`,
-                    `Lens: ${ENGINE_LENSES[slot]}.`,
-                    `Issue: ${issue.question}`,
-                    `Why it matters: ${issue.whyItMatters}`,
-                    reviewForSlot ? `Your earlier review summary: ${reviewForSlot.summary}` : `You are the design lead for this issue.`,
-                    `Available decision options: ${issue.options.map(option => option.label).join(' | ')}`,
-                    manualReviewFeedback ? `Human manual review feedback:\n${manualReviewFeedback}` : '',
-                    'Respond in plain text with your position, strongest reason, top risk, and preferred option. Keep it under 180 words.',
-                  ].join('\n')
+                  `You are ${ENGINE_LABELS[slot]} in an AegisFlow roundtable.`,
+                  `Lens: ${ENGINE_LENSES[slot]}.`,
+                  `Issue: ${issue.question}`,
+                  `Why it matters: ${issue.whyItMatters}`,
+                  reviewForSlot ? `Your earlier review summary: ${reviewForSlot.summary}` : `You are the design lead for this issue.`,
+                  `Available decision options: ${issue.options.map(option => option.label).join(' | ')}`,
+                  manualReviewFeedback ? `Human manual review feedback:\n${manualReviewFeedback}` : '',
+                  'Respond in plain text with your position, strongest reason, top risk, and preferred option. Keep it under 180 words.',
+                ].join('\n')
                 : [
-                    `You are ${ENGINE_LABELS[slot]} in round 2 of the AegisFlow roundtable.`,
-                    `Issue: ${issue.question}`,
-                    `Round 1 transcript:\n${priorTurns.map(turn => `${turn.agentLabel}: ${turn.message}`).join('\n\n')}`,
-                    manualReviewFeedback ? `Human manual review feedback:\n${manualReviewFeedback}` : '',
-                    'Respond with: what you agree with, what still worries you, and your final recommendation. Keep it under 150 words.',
-                  ].join('\n');
+                  `You are ${ENGINE_LABELS[slot]} in round 2 of the AegisFlow roundtable.`,
+                  `Issue: ${issue.question}`,
+                  `Round 1 transcript:\n${priorTurns.map(turn => `${turn.agentLabel}: ${turn.message}`).join('\n\n')}`,
+                  manualReviewFeedback ? `Human manual review feedback:\n${manualReviewFeedback}` : '',
+                  'Respond with: what you agree with, what still worries you, and your final recommendation. Keep it under 150 words.',
+                ].join('\n');
 
             const result = await this.runWithLoading(
               {
@@ -1574,7 +1636,7 @@ export class Orchestrator {
               },
               () => this.withTransientHealth(() =>
                 this.runTextForSlot(slot, prompt, {
-                  timeoutMs: MODEL_TIMEOUTS_MS.roundtableText,
+                  timeoutMs: this.config.timeouts.modelExecutionMs,
                   allowFallbackProxy: true,
                 }),
               ),
@@ -1654,10 +1716,10 @@ export class Orchestrator {
           plan.issues.flatMap(issue => issue.options).length > 0
             ? plan.issues.flatMap(issue => issue.options)
             : [{
-                value: 'proceed',
-                label: this.copy('按当前设计继续推进', 'Proceed with current design'),
-                rationale: this.copy('未检测到阻塞性冲突。', 'No blocking conflicts detected.'),
-              }],
+              value: 'proceed',
+              label: this.copy('按当前设计继续推进', 'Proceed with current design'),
+              rationale: this.copy('未检测到阻塞性冲突。', 'No blocking conflicts detected.'),
+            }],
         recommendations: consensus.consensusPoints,
         unresolvedRisks: consensus.unresolvedQuestions,
       };
@@ -1799,6 +1861,8 @@ export class Orchestrator {
       'You are finalizing the technical design after a human arbitration decision.',
       'Update the original technical design to reflect the selected decision and the roundtable recommendations.',
       'Return markdown only.',
+      'Do not wrap the answer in triple backticks.',
+      'Do not add any explanation before the document.',
       '',
       `Original draft:\n${designDraft}`,
       '',
@@ -1821,7 +1885,7 @@ export class Orchestrator {
       throw error;
     }
     ChatUI.info('Final Design Routing', this.formatExecutionSummary('定稿主写', leadMeta.leadSlot, finalDesign.resolution));
-    this.store.saveArtifact('tech-design-final.md', finalDesign.output.stdout.trim());
+    this.store.saveArtifact('tech-design-final.md', normalizeMarkdownDocument(finalDesign.output.stdout));
     this.store.markStage('stage4-roundtable', 'completed', 'Human decision captured and final design generated');
     return { pausedForManualReview: false };
   }
@@ -1928,7 +1992,7 @@ export class Orchestrator {
             prompt,
             TASK_GRAPH_SCHEMA,
             {
-              timeoutMs: MODEL_TIMEOUTS_MS.defaultJson,
+              timeoutMs: this.config.timeouts.modelExecutionMs,
               allowFallbackProxy: false,
             },
           )),
@@ -1991,6 +2055,7 @@ export class Orchestrator {
       this.isSingleTerminalMode(strategy)
         ? '结果复核：沿用同一终端，不再切换到其他程序'
         : '结果复核：参考任务计划中的 Reviewer',
+      this.describeTaskExecutionSessionMode(strategy),
       this.isSingleTerminalMode(strategy)
         ? '说明：单一终端模式下不会代理到其他程序，失败会直接记录到任务结果。'
         : '说明：若 Owner 不可用，会自动代理执行，但保留原始 Owner 角色。',
@@ -2009,7 +2074,7 @@ export class Orchestrator {
         continue;
       }
 
-      const spinner = ChatUI.canUseInteractiveTaskSession()
+      const spinner = this.shouldUseInteractiveTaskSession(task.recommendedOwner)
         ? null
         : ChatUI.showProgress(`Executing ${task.id} with ${ENGINE_LABELS[task.recommendedOwner]}...`);
 
@@ -2113,7 +2178,7 @@ export class Orchestrator {
             prompt,
             INTEGRATION_REVIEW_SCHEMA,
             {
-              timeoutMs: MODEL_TIMEOUTS_MS.defaultJson,
+              timeoutMs: this.config.timeouts.modelExecutionMs,
               allowFallbackProxy: false,
             },
           )),
@@ -2158,7 +2223,10 @@ export class Orchestrator {
   ): Promise<TaskRunRecord> {
     const startedAt = nowIso();
     const before = captureWorkspaceSnapshot(process.cwd());
-    const liveTaskSession = ChatUI.canUseInteractiveTaskSession();
+    const liveTaskSession = this.shouldUseInteractiveTaskSession(task.recommendedOwner);
+    if (!liveTaskSession) {
+      this.maybeAnnounceInteractiveTaskDowngrade(task.recommendedOwner);
+    }
 
     const initialAttempt = await this.runTaskImplementationAttempt(task, design, strategy, {
       interactiveSession: liveTaskSession,
@@ -2344,7 +2412,7 @@ export class Orchestrator {
           findings: TaskReviewRecord['findings'];
           openQuestions: string[];
         }>(task.recommendedReviewer, prompt, TASK_EXECUTION_REVIEW_SCHEMA, {
-          timeoutMs: MODEL_TIMEOUTS_MS.reviewJson,
+          timeoutMs: this.config.timeouts.modelExecutionMs,
           avoidTargets: this.isSingleTerminalMode(strategy) ? [] : avoidTargets,
           allowFallbackProxy: this.isSingleTerminalMode(strategy) ? false : true,
         }),
@@ -2486,13 +2554,13 @@ export class Orchestrator {
       '',
       record.review
         ? [
-            `## ${this.copy('复核结论', 'Review Verdict')}`,
-            `- ${this.copy('结果', 'Outcome')}: ${this.formatTaskReviewStatus(record.review.status)}`,
-            `- ${this.copy('实际复核', 'Reviewed By')}: ${ENGINE_LABELS[record.review.resolvedBy]}${record.review.proxyUsed ? this.copy('（代理执行）', ' (fallback proxy)') : ''}`,
-            '',
-            record.review.summary,
-            '',
-          ].join('\n')
+          `## ${this.copy('复核结论', 'Review Verdict')}`,
+          `- ${this.copy('结果', 'Outcome')}: ${this.formatTaskReviewStatus(record.review.status)}`,
+          `- ${this.copy('实际复核', 'Reviewed By')}: ${ENGINE_LABELS[record.review.resolvedBy]}${record.review.proxyUsed ? this.copy('（代理执行）', ' (fallback proxy)') : ''}`,
+          '',
+          record.review.summary,
+          '',
+        ].join('\n')
         : '',
     ]
       .filter(Boolean)
@@ -2514,13 +2582,13 @@ export class Orchestrator {
       `## ${this.copy('发现', 'Findings')}`,
       ...(review.findings.length > 0
         ? review.findings.flatMap(item => [
-            `### ${item.title}`,
-            `- ${this.copy('严重级别', 'Severity')}: ${item.severity}`,
-            `- ${this.copy('置信度', 'Confidence')}: ${item.confidence}`,
-            item.details,
-            `${this.copy('建议', 'Recommendation')}: ${item.recommendation}`,
-            '',
-          ])
+          `### ${item.title}`,
+          `- ${this.copy('严重级别', 'Severity')}: ${item.severity}`,
+          `- ${this.copy('置信度', 'Confidence')}: ${item.confidence}`,
+          item.details,
+          `${this.copy('建议', 'Recommendation')}: ${item.recommendation}`,
+          '',
+        ])
         : [`- ${this.copy('无明确问题。', 'No explicit findings.')}`, '']),
       `## ${this.copy('开放问题', 'Open Questions')}`,
       ...(review.openQuestions.length > 0 ? review.openQuestions.map(item => `- ${item}`) : [`- ${this.copy('无', 'None')}`]),
@@ -3030,8 +3098,8 @@ export class Orchestrator {
       durationMs ? `耗时：${this.formatDurationMs(durationMs)}` : undefined,
       status === 'running'
         ? this.copy(
-          '可见性：如果底层模型没有流式输出，终端会每 30 秒补一条心跳，避免看起来像卡住。',
-          'Visibility: if live streaming is unavailable, the terminal will emit a heartbeat every 30 seconds.',
+          '可见性：长文阶段只显示状态与心跳，避免把正文重复打印到终端里。',
+          'Visibility: long-form stages show status and heartbeats only to avoid printing the full document twice.',
         )
         : undefined,
     ].filter((line): line is string => Boolean(line));
@@ -3237,6 +3305,51 @@ export class Orchestrator {
       .join('\n');
   }
 
+  private shouldUseInteractiveTaskSession(slot: EngineSlot): boolean {
+    return ChatUI.canUseInteractiveTaskSession() && this.interactiveAvailability[slot]?.available === true;
+  }
+
+  private maybeAnnounceInteractiveTaskDowngrade(slot: EngineSlot): void {
+    if (!ChatUI.canUseInteractiveTaskSession()) {
+      return;
+    }
+
+    const status = this.interactiveAvailability[slot];
+    if (status?.available || this.interactiveDowngradeNotified.has(slot)) {
+      return;
+    }
+
+    this.interactiveDowngradeNotified.add(slot);
+    ChatUI.info(
+      'Task Execution Mode',
+      this.copy(
+        `${ENGINE_LABELS[slot]} 当前无法启动实时终端会话，已自动降级为非交互执行。\n原因：${status?.reason || 'interactive PTY unavailable.'}`,
+        `${ENGINE_LABELS[slot]} cannot start a live task session in the current terminal, so execution was automatically downgraded to headless mode.\nReason: ${status?.reason || 'interactive PTY unavailable.'}`,
+      ),
+    );
+  }
+
+  private describeTaskExecutionSessionMode(strategy: DevelopmentStrategy): string {
+    if (!ChatUI.canUseInteractiveTaskSession()) {
+      return this.copy('实时会话：当前终端不是交互 TTY，将直接使用非交互执行。', 'Live session: the current terminal is not interactive, so execution will run headlessly.');
+    }
+
+    if (!this.isSingleTerminalMode(strategy)) {
+      return this.copy('实时会话：若当前 Owner 的 PTY 健康检查失败，会自动降级为非交互执行。', 'Live session: if the current owner fails the PTY health check, execution will auto-downgrade to headless mode.');
+    }
+
+    const slot = this.singleTerminalEngineOrThrow(strategy);
+    const status = this.interactiveAvailability[slot];
+    if (status?.available) {
+      return this.copy(`实时会话：${ENGINE_LABELS[slot]} 已通过 PTY 健康检查，可按需进入实时终端会话。`, `Live session: ${ENGINE_LABELS[slot]} passed the PTY health check and can use a live terminal session when needed.`);
+    }
+
+    return this.copy(
+      `实时会话：${ENGINE_LABELS[slot]} 未通过 PTY 健康检查，将自动降级为非交互执行。`,
+      `Live session: ${ENGINE_LABELS[slot]} did not pass the PTY health check and will auto-downgrade to headless mode.`,
+    );
+  }
+
   private formatRequirementComplexity(complexity: RequirementAssessment['complexity']): string {
     if (complexity === 'high') {
       return this.copy('高', 'High');
@@ -3373,12 +3486,12 @@ export class Orchestrator {
       `## ${this.copy('各 Agent 结论', 'Agent Reviews')}`,
       ...(reviews.length > 0
         ? reviews.flatMap(review => [
-            `### ${review.reviewerLabel}`,
-            `- ${this.copy('视角', 'Focus')}: ${review.focus}`,
-            `- ${this.copy('结论', 'Verdict')}: ${review.verdict === 'clear' ? this.copy('可进入 PRD', 'Ready for PRD') : this.copy('需进一步澄清', 'Needs clarification')}`,
-            `- ${this.copy('摘要', 'Summary')}: ${review.summary}`,
-            '',
-          ])
+          `### ${review.reviewerLabel}`,
+          `- ${this.copy('视角', 'Focus')}: ${review.focus}`,
+          `- ${this.copy('结论', 'Verdict')}: ${review.verdict === 'clear' ? this.copy('可进入 PRD', 'Ready for PRD') : this.copy('需进一步澄清', 'Needs clarification')}`,
+          `- ${this.copy('摘要', 'Summary')}: ${review.summary}`,
+          '',
+        ])
         : [`- ${this.copy('无', 'None')}`, '']),
     ].join('\n');
   }
@@ -3421,24 +3534,24 @@ export class Orchestrator {
       '',
       ...(pack.summaryCard
         ? [
-            `## ${this.copy('已确认的需求总结', 'Confirmed Requirement Summary')}`,
-            this.renderRequirementSummaryMarkdown(pack.summaryCard),
-            '',
-          ]
+          `## ${this.copy('已确认的需求总结', 'Confirmed Requirement Summary')}`,
+          this.renderRequirementSummaryMarkdown(pack.summaryCard),
+          '',
+        ]
         : []),
       ...(pack.validationSummary
         ? [
-            `## ${this.copy('复杂需求校验结论', 'Complex Requirement Validation')}`,
-            this.renderRequirementValidationSummaryMarkdown(pack.validationSummary, pack.validationReviews),
-            '',
-          ]
+          `## ${this.copy('复杂需求校验结论', 'Complex Requirement Validation')}`,
+          this.renderRequirementValidationSummaryMarkdown(pack.validationSummary, pack.validationReviews),
+          '',
+        ]
         : []),
       ...(pack.userClarifications.length > 0
         ? [
-            `## ${this.copy('用户补充澄清', 'User Clarifications')}`,
-            ...this.renderMarkdownList(pack.userClarifications, this.copy('无', 'None')),
-            '',
-          ]
+          `## ${this.copy('用户补充澄清', 'User Clarifications')}`,
+          ...this.renderMarkdownList(pack.userClarifications, this.copy('无', 'None')),
+          '',
+        ]
         : []),
     ].join('\n');
   }
@@ -3639,6 +3752,7 @@ export class Orchestrator {
       liveTitle?: string;
       heartbeatMs?: number;
       heartbeatMessage?: (slot: EngineSlot, elapsedMs: number) => string | null;
+      streamStdout?: boolean;
     } = {},
   ): Promise<{ resolution: SlotResolution; output: CLIExecutionResult<string> }> {
     return this.withTransientHealth(async () => {
@@ -3652,8 +3766,8 @@ export class Orchestrator {
       if (streamLog) {
         streamLog.message(
           this.copy(
-            '长文阶段可能需要几十秒到数分钟；若底层模型支持增量输出，会在这里实时显示，否则会展示加载中状态。',
-            'Long-form generation can take from several seconds to a few minutes. If the underlying model provides incremental output, it will appear here live; otherwise a loading state will be shown.',
+            '长文阶段可能需要几十秒到数分钟；这里会显示进度状态，正文会在完成后统一展示。',
+            'Long-form generation can take from several seconds to a few minutes. Progress appears here, and the document is shown after completion.',
           ),
         );
       }
@@ -3671,9 +3785,9 @@ export class Orchestrator {
         );
         try {
           const result = await this.runTextForSlot(slot, prompt, {
-            timeoutMs: options.timeoutMs ?? MODEL_TIMEOUTS_MS.defaultText,
+            timeoutMs: options.timeoutMs ?? this.config.timeouts.modelExecutionMs,
             allowFallbackProxy: true,
-            onStdoutChunk: chunk => streamLog?.stdout(chunk),
+            onStdoutChunk: options.streamStdout ? chunk => streamLog?.stdout(chunk) : undefined,
             onStderrChunk: chunk => streamLog?.stderr(chunk),
           });
           streamLog?.stopLoading();
@@ -3770,7 +3884,7 @@ export class Orchestrator {
 
       const output = await this.adapters[slot].executeJson<T>(localizedPrompt, schema, {
         cwd: process.cwd(),
-        timeoutMs: options.timeoutMs ?? MODEL_TIMEOUTS_MS.defaultJson,
+        timeoutMs: options.timeoutMs ?? this.config.timeouts.modelExecutionMs,
         signal: options.signal,
       });
 
@@ -3791,7 +3905,7 @@ export class Orchestrator {
     try {
       const output = await this.adapters[resolution.resolvedBy].executeJson<T>(localizedPrompt, schema, {
         cwd: process.cwd(),
-        timeoutMs: options.timeoutMs ?? MODEL_TIMEOUTS_MS.defaultJson,
+        timeoutMs: options.timeoutMs ?? this.config.timeouts.modelExecutionMs,
         signal: options.signal,
       });
       return { resolution, output };
@@ -3809,7 +3923,7 @@ export class Orchestrator {
         );
         const output = await this.adapters[retryResolution.resolvedBy].executeJson<T>(localizedPrompt, schema, {
           cwd: process.cwd(),
-          timeoutMs: options.timeoutMs ?? MODEL_TIMEOUTS_MS.defaultJson,
+          timeoutMs: options.timeoutMs ?? this.config.timeouts.modelExecutionMs,
           signal: options.signal,
         });
         return { resolution: retryResolution, output };
@@ -3830,7 +3944,7 @@ export class Orchestrator {
       for (const slot of slots) {
         try {
           const { resolution, output } = await this.runJsonForSlot<T>(slot, prompt, schema, {
-            timeoutMs: MODEL_TIMEOUTS_MS.defaultJson,
+            timeoutMs: this.config.timeouts.modelExecutionMs,
           });
           return {
             resolution,
@@ -3881,17 +3995,17 @@ export class Orchestrator {
       interrupt:
         options.interrupt && abortController
           ? {
-              key: options.interrupt.key,
-              hint: options.interrupt.hint,
-              onTrigger: () => {
-                if (interrupted) {
-                  return;
-                }
-                interrupted = true;
-                options.interrupt?.onTrigger?.();
-                abortController.abort(messages.skipped || `${options.interrupt?.key} requested.`);
-              },
-            }
+            key: options.interrupt.key,
+            hint: options.interrupt.hint,
+            onTrigger: () => {
+              if (interrupted) {
+                return;
+              }
+              interrupted = true;
+              options.interrupt?.onTrigger?.();
+              abortController.abort(messages.skipped || `${options.interrupt?.key} requested.`);
+            },
+          }
           : undefined,
     });
 
@@ -4054,10 +4168,10 @@ export class Orchestrator {
       '',
       ...(manualReviewFeedback
         ? [
-            `## ${this.copy('已记录的人工复核意见', 'Captured Manual Review Feedback')}`,
-            manualReviewFeedback,
-            '',
-          ]
+          `## ${this.copy('已记录的人工复核意见', 'Captured Manual Review Feedback')}`,
+          manualReviewFeedback,
+          '',
+        ]
         : []),
       `## ${this.copy('当前技术设计全文', 'Full Technical Design')}`,
       designDraft.trim(),

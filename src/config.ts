@@ -1,5 +1,6 @@
 import fs from 'fs';
 
+import { DEFAULT_MODEL_EXECUTION_TIMEOUT_MINUTES, DEFAULT_MODEL_EXECUTION_TIMEOUT_MS } from './defaults';
 import {
   AegisConfig,
   AegisConfigFile,
@@ -9,6 +10,8 @@ import {
   RoutingStagePreferenceKey,
   SetupConfig,
   TaskDomain,
+  TimeoutConfig,
+  TimeoutConfigFile,
 } from './types';
 import { DEFAULT_ENGINE_CANDIDATES } from './engine-discovery';
 import { ensureAegisHomeDir, getAegisConfigPath, getLegacyWorkspaceConfigPath } from './paths';
@@ -71,6 +74,32 @@ function normalizeLanguage(value: unknown): ReplyLanguageConfig {
   return { code, label };
 }
 
+function normalizeTimeouts(value: unknown): TimeoutConfig {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      modelExecutionMs: DEFAULT_MODEL_EXECUTION_TIMEOUT_MS,
+    };
+  }
+
+  const candidate = value as Partial<TimeoutConfigFile>;
+  const minutes =
+    typeof candidate.modelExecutionMinutes === 'number'
+    && Number.isFinite(candidate.modelExecutionMinutes)
+    && candidate.modelExecutionMinutes > 0
+      ? candidate.modelExecutionMinutes
+      : DEFAULT_MODEL_EXECUTION_TIMEOUT_MINUTES;
+
+  return {
+    modelExecutionMs: Math.round(minutes * 60 * 1000),
+  };
+}
+
+function hasPersistedModelExecutionTimeout(config: AegisConfigFile): boolean {
+  return typeof config.timeouts?.modelExecutionMinutes === 'number'
+    && Number.isFinite(config.timeouts.modelExecutionMinutes)
+    && config.timeouts.modelExecutionMinutes > 0;
+}
+
 function normalizeDetectedEngine(value: unknown): EngineDetectionStatus | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
@@ -113,7 +142,14 @@ function normalizeSetup(value: unknown): SetupConfig {
 export function readAegisConfigFile(cwd = process.cwd()): AegisConfigFile {
   const filePath = getAegisConfigPath();
   if (fs.existsSync(filePath)) {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as AegisConfigFile;
+    const config = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as AegisConfigFile;
+    if (hasPersistedModelExecutionTimeout(config)) {
+      return config;
+    }
+
+    const migratedConfig = compactAegisConfig(createAegisConfig(config));
+    writeAegisConfigFile(migratedConfig);
+    return migratedConfig;
   }
 
   const legacyPath = getLegacyWorkspaceConfigPath(cwd);
@@ -122,8 +158,9 @@ export function readAegisConfigFile(cwd = process.cwd()): AegisConfigFile {
   }
 
   const legacyConfig = JSON.parse(fs.readFileSync(legacyPath, 'utf-8')) as AegisConfigFile;
-  writeAegisConfigFile(legacyConfig);
-  return legacyConfig;
+  const migratedConfig = compactAegisConfig(createAegisConfig(legacyConfig));
+  writeAegisConfigFile(migratedConfig);
+  return migratedConfig;
 }
 
 function writeAegisConfigFile(config: AegisConfigFile): string {
@@ -154,6 +191,7 @@ export function createAegisConfig(fileConfig: AegisConfigFile = {}): AegisConfig
     dryRun: fileConfig.dryRun === true,
     setup: normalizeSetup(fileConfig.setup),
     language: normalizeLanguage(fileConfig.language),
+    timeouts: normalizeTimeouts(fileConfig.timeouts),
     routing: {
       designLead: parseEngineSlot(fileConfig.routing?.designLead),
       fallbackOrder: fallbackOrder.length > 0 ? fallbackOrder : ['claude', 'codex', 'gemini'],
@@ -240,6 +278,12 @@ function compactEngines(engines: AegisConfig['engines']): AegisConfigFile['engin
   return compactEntries.length > 0 ? Object.fromEntries(compactEntries) : undefined;
 }
 
+function compactTimeouts(timeouts: AegisConfig['timeouts']): NonNullable<AegisConfigFile['timeouts']> {
+  return {
+    modelExecutionMinutes: timeouts.modelExecutionMs / (60 * 1000),
+  };
+}
+
 function compactAegisConfig(config: AegisConfig): AegisConfigFile {
   const domainOwners = compactDomainOwners(config.routing.domainOwners);
   const stagePreferences = compactStagePreferences(config.routing.stagePreferences, config.routing.fallbackOrder);
@@ -249,6 +293,7 @@ function compactAegisConfig(config: AegisConfig): AegisConfigFile {
     dryRun: config.dryRun,
     setup: config.setup,
     language: config.language,
+    timeouts: compactTimeouts(config.timeouts),
     routing: {
       ...(config.routing.designLead ? { designLead: config.routing.designLead } : {}),
       fallbackOrder: config.routing.fallbackOrder,
